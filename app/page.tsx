@@ -1,272 +1,443 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from "react";
+import type {
+  CandidateProfile,
+  GenerateResponse,
+  InputMode,
+  OutreachTemplate,
+} from "@/types";
 
-interface GenerateResult {
-  domain: string;
-  title: string;
-  opener: string;
-  angle: string;
-  usedCache: boolean;
-  siteData: {
-    domain: string;
-    url: string;
-    title: string;
-    metaDescription: string;
-    headings: string[];
-    bodyText: string;
-    rawHtmlChars: number;
-    cleanedChars: number;
-  };
-  telemetry: {
-    inputTokens: number;
-    outputTokens: number;
-    estimatedCostUsd: string;
-    rawHtmlChars: number;
-    cleanedChars: number;
-  };
-}
+const PROFILE_STORAGE_KEY = "rolereach_saved_profile_v1";
+const CACHE_STORAGE_KEY = "rolereach_response_cache_v1";
 
-const SAMPLE_URLS = ['linear.app', 'resend.com', 'cal.com'];
+const DEMO_PROFILE: CandidateProfile = {
+  fullName: "Visu Keerthan Samidapogu",
+  headline: "Full-Stack Software Engineer (Python, Django, Next.js, TypeScript)",
+  skills:
+    "Python, Django, DRF, FastAPI, TypeScript, React, Next.js, MySQL, PostgreSQL, Gemini API",
+  projectsAndExperience:
+    "Frontend Intern at StructAI (Next.js/React). Built RoleReach Studio / AI Outreach Opener (Next.js App Router, TypeScript, Zod, Cheerio, Gemini/Groq failover), Finance Data Processing & RBAC REST API (Python/DRF), and Typing Pro full-stack web app (Django/MySQL).",
+  githubUrl: "https://github.com/Visukeerthan",
+  availability: "Available immediately (Remote or Bengaluru relocation)",
+};
 
-const ANGLES = [
-  { id: 'standard', label: 'Standard' },
-  { id: 'partnership', label: 'Partnership' },
-  { id: 'peer', label: 'Peer / Feedback' },
-];
+export default function HomePage() {
+  const [profile, setProfile] = useState<CandidateProfile>({
+    fullName: "",
+    headline: "",
+    skills: "",
+    projectsAndExperience: "",
+    githubUrl: "",
+    availability: "Available immediately",
+  });
+  const [savedBanner, setSavedBanner] = useState(false);
+  const [parsingResume, setParsingResume] = useState(false);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-export default function Home() {
-  const [url, setUrl] = useState('');
+  const [mode, setMode] = useState<InputMode>("hybrid");
+  const [template, setTemplate] = useState<OutreachTemplate>("wellfound_note");
+  const [targetRole, setTargetRole] = useState("");
+  const [companyUrl, setCompanyUrl] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [customInstruction, setCustomInstruction] = useState("");
+
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [result, setResult] = useState<GenerateResult | null>(null);
+  const [fromCache, setFromCache] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [output, setOutput] = useState<GenerateResponse | null>(null);
   const [copied, setCopied] = useState(false);
-  const [showContext, setShowContext] = useState(false);
 
-  async function runGenerate(targetUrl: string, angle = 'standard', reuseCache = false) {
-    if (!targetUrl.trim()) return;
-    setLoading(true);
-    setError('');
-    setCopied(false);
-
+  useEffect(() => {
     try {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: targetUrl,
-          angle,
-          cachedSite: reuseCache && result ? result.siteData : undefined,
-        }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || 'Failed to generate opener.');
-      } else {
-        setResult(data);
+      const storedProfile = localStorage.getItem(PROFILE_STORAGE_KEY);
+      if (storedProfile) {
+        setProfile(JSON.parse(storedProfile));
       }
     } catch {
-      setError('Network error. Please check your connection and try again.');
+      // ignore storage parse errors
+    }
+  }, []);
+
+  function handleSaveProfile() {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    setSavedBanner(true);
+    setTimeout(() => setSavedBanner(false), 2000);
+  }
+
+  async function handleResumeUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setParsingResume(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/parse-resume", {
+        method: "POST",
+        body: formData,
+      });
+
+      const rawText = await response.text();
+      let data: { profile?: CandidateProfile; error?: string };
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(
+          rawText.slice(0, 180) || "Server returned an unexpected non-JSON response."
+        );
+      }
+
+      if (!response.ok || !data.profile) {
+        throw new Error(data.error || "Failed to parse resume.");
+      }
+
+      setProfile(data.profile);
+      setUploadedFileName(file.name);
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(data.profile));
+      setSavedBanner(true);
+      setTimeout(() => setSavedBanner(false), 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not parse uploaded file.");
+    } finally {
+      setParsingResume(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handleLoadDemo() {
+    setProfile(DEMO_PROFILE);
+    setUploadedFileName(null);
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(DEMO_PROFILE));
+    setMode("url");
+    setTemplate("wellfound_note");
+    setTargetRole("Full-Stack Engineering Intern");
+    setCompanyUrl("https://linear.app");
+    setError(null);
+  }
+
+  async function handleGenerate(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setOutput(null);
+    setFromCache(false);
+
+    const payload = {
+      profile,
+      mode,
+      template,
+      companyUrl: companyUrl.trim(),
+      jobDescription: jobDescription.trim(),
+      targetRole: targetRole.trim(),
+      customInstruction: customInstruction.trim(),
+    };
+
+    const cacheKey = JSON.stringify(payload);
+
+    try {
+      const rawCache = localStorage.getItem(CACHE_STORAGE_KEY);
+      const cacheMap: Record<string, GenerateResponse> = rawCache
+        ? JSON.parse(rawCache)
+        : {};
+
+      if (cacheMap[cacheKey]) {
+        setOutput(cacheMap[cacheKey]);
+        setFromCache(true);
+        setLoading(false);
+        return;
+      }
+
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const rawText = await response.text();
+      let data: GenerateResponse & { error?: string };
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(
+          rawText.slice(0, 180) || "Server returned an unexpected non-JSON response."
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate outreach.");
+      }
+
+      setOutput(data);
+      cacheMap[cacheKey] = data;
+      localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(cacheMap));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setResult(null);
-    setShowContext(false);
-    runGenerate(url, 'standard', false);
-  }
-
   function handleCopy() {
-    if (!result) return;
-    navigator.clipboard.writeText(result.opener);
+    if (!output) return;
+    const textToCopy = output.subject
+      ? `Subject: ${output.subject}\n\n${output.content}`
+      : output.content;
+    navigator.clipboard.writeText(textToCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
 
-  const reductionPct = result
-    ? Math.max(
-        0,
-        Math.round(
-          (1 - result.telemetry.cleanedChars / Math.max(result.telemetry.rawHtmlChars, 1)) * 100
-        )
-      )
-    : 0;
-
-  const lineCount = result
-    ? result.opener.split('\n').filter((l) => l.trim().length > 0).length
-    : 0;
-  const wordCount = result ? result.opener.trim().split(/\s+/).length : 0;
-
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center px-4 py-12">
-      <div className="w-full max-w-xl space-y-6">
-        <div className="space-y-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight">Founder Cold Email Opener</h1>
-          <p className="text-sm text-zinc-400">
-            Paste a company website to extract live positioning and draft a 3-line founder opener.
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="flex gap-2">
-          <input
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="e.g. linear.app"
-            className="flex-1 rounded-lg bg-zinc-900 border border-zinc-800 px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600"
-          />
-          <button
-            type="submit"
-            disabled={loading || !url.trim()}
-            className="rounded-lg bg-white text-zinc-950 font-medium px-5 py-2.5 text-sm hover:bg-zinc-200 disabled:opacity-40 transition cursor-pointer"
-          >
-            {loading && !result ? 'Drafting...' : 'Generate'}
-          </button>
-        </form>
-
-        <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <span>Try:</span>
-          {SAMPLE_URLS.map((sample) => (
-            <button
-              key={sample}
-              type="button"
-              disabled={loading}
-              onClick={() => {
-                setUrl(sample);
-                setResult(null);
-                setShowContext(false);
-                runGenerate(sample, 'standard', false);
-              }}
-              className="rounded border border-zinc-800 bg-zinc-900/60 px-2.5 py-1 text-zinc-300 hover:border-zinc-700 hover:text-white transition cursor-pointer"
-            >
-              {sample}
-            </button>
-          ))}
-        </div>
-
-        {error && (
-          <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
-            {error}
+    <main className="min-h-screen bg-zinc-950 text-zinc-100 px-4 py-8">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-zinc-800 pb-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">RoleReach Studio</h1>
+            <p className="text-sm text-zinc-400">
+              Upload or save your resume once. Generate tailored outreach from any Company URL or Job Description.
+            </p>
           </div>
-        )}
+          <button
+            type="button"
+            onClick={handleLoadDemo}
+            className="self-start sm:self-auto text-xs font-medium px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 transition"
+          >
+            Load Sample Resume & URL
+          </button>
+        </header>
 
-        {result && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5 space-y-4">
-            <div className="flex items-start justify-between gap-4 border-b border-zinc-800 pb-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-mono uppercase tracking-wider text-zinc-500">
-                    {result.domain}
-                  </p>
-                  <span className="text-[11px] text-zinc-500">
-                    · {lineCount} lines · {wordCount} words
-                  </span>
-                </div>
-                <p className="text-sm font-medium text-zinc-200 truncate">{result.title}</p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <a
-                  href={`mailto:?subject=${encodeURIComponent(`Quick question about ${result.domain}`)}&body=${encodeURIComponent(result.opener)}`}
-                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 transition"
-                >
-                  Open in Mail
-                </a>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* LEFT COLUMN: SAVED RESUME PROFILE */}
+          <section className="lg:col-span-5 bg-zinc-900/70 border border-zinc-800 rounded-xl p-4 space-y-3 h-fit">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                1. Saved Resume Profile
+              </h2>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.txt,.md,application/pdf,text/plain"
+                  onChange={handleResumeUpload}
+                  className="hidden"
+                />
                 <button
                   type="button"
-                  onClick={handleCopy}
-                  className="rounded-md bg-zinc-100 text-zinc-950 px-3 py-1.5 text-xs font-medium hover:bg-zinc-300 transition cursor-pointer"
+                  disabled={parsingResume}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-xs px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 font-medium transition"
                 >
-                  {copied ? 'Copied!' : 'Copy'}
+                  {parsingResume ? "Parsing PDF..." : "Upload Resume"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveProfile}
+                  className="text-xs px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 font-medium transition"
+                >
+                  {savedBanner ? "Saved!" : "Save"}
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                {ANGLES.map((a) => (
+            {uploadedFileName && (
+              <p className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-900/70 rounded-md px-2.5 py-1.5">
+                Auto-filled & saved from: {uploadedFileName}
+              </p>
+            )}
+
+            <input
+              placeholder="Full Name"
+              value={profile.fullName}
+              onChange={(e) => setProfile({ ...profile, fullName: e.target.value })}
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <input
+              placeholder="Headline (e.g. Full-Stack Python & Next.js Developer)"
+              value={profile.headline}
+              onChange={(e) => setProfile({ ...profile, headline: e.target.value })}
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <input
+              placeholder="Core Skills (comma-separated)"
+              value={profile.skills}
+              onChange={(e) => setProfile({ ...profile, skills: e.target.value })}
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <textarea
+              rows={5}
+              placeholder="Paste key projects, internships & stack highlights from your resume..."
+              value={profile.projectsAndExperience}
+              onChange={(e) =>
+                setProfile({ ...profile, projectsAndExperience: e.target.value })
+              }
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <input
+              placeholder="GitHub or Portfolio URL"
+              value={profile.githubUrl}
+              onChange={(e) => setProfile({ ...profile, githubUrl: e.target.value })}
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+            <input
+              placeholder="Availability (e.g. Immediate, Remote or Bengaluru)"
+              value={profile.availability}
+              onChange={(e) =>
+                setProfile({ ...profile, availability: e.target.value })
+              }
+              className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+            />
+          </section>
+
+          {/* RIGHT COLUMN: TARGET + TEMPLATE GENERATOR */}
+          <section className="lg:col-span-7 space-y-4">
+            <form
+              onSubmit={handleGenerate}
+              className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-4 space-y-4"
+            >
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                2. Target Context & Template
+              </h2>
+
+              {/* Input Mode Switcher */}
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    ["url", "Company URL"],
+                    ["jd", "Job Description"],
+                    ["hybrid", "URL + JD"],
+                  ] as const
+                ).map(([key, label]) => (
                   <button
-                    key={a.id}
+                    key={key}
                     type="button"
-                    disabled={loading}
-                    onClick={() => runGenerate(result.siteData.url || url, a.id, true)}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
-                      result.angle === a.id
-                        ? 'bg-zinc-800 text-white border border-zinc-600'
-                        : 'bg-zinc-950/60 text-zinc-400 border border-zinc-800 hover:text-zinc-200'
+                    onClick={() => setMode(key)}
+                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
+                      mode === key
+                        ? "bg-indigo-600 border-indigo-500 text-white"
+                        : "bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200"
                     }`}
                   >
-                    {a.label}
+                    {label}
                   </button>
                 ))}
               </div>
-              {result.usedCache && (
-                <span className="text-[11px] text-emerald-400/90 font-mono">
-                  ⚡ Cached scrape (0ms fetch)
-                </span>
+
+              {/* Output Template Switcher */}
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    ["wellfound_note", "Wellfound Note"],
+                    ["cold_email", "Cold Email"],
+                    ["linkedin_dm", "LinkedIn DM"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTemplate(key)}
+                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
+                      template === key
+                        ? "bg-zinc-100 border-white text-zinc-950"
+                        : "bg-zinc-950 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                required
+                placeholder="Target Role (e.g. AI Engineer / Full-Stack Intern)"
+                value={targetRole}
+                onChange={(e) => setTargetRole(e.target.value)}
+                className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+              />
+
+              {(mode === "url" || mode === "hybrid") && (
+                <input
+                  placeholder="Company Website URL (e.g. linear.app)"
+                  value={companyUrl}
+                  onChange={(e) => setCompanyUrl(e.target.value)}
+                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                />
               )}
-            </div>
 
-            <div className="whitespace-pre-line rounded-lg border border-zinc-800/80 bg-zinc-950/70 p-4 text-sm leading-relaxed text-zinc-100">
-              {loading ? 'Refining angle...' : result.opener}
-            </div>
+              {(mode === "jd" || mode === "hybrid") && (
+                <textarea
+                  rows={4}
+                  placeholder="Paste the Job Description here..."
+                  value={jobDescription}
+                  onChange={(e) => setJobDescription(e.target.value)}
+                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+                />
+              )}
 
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <div className="rounded-md border border-zinc-800/60 bg-zinc-950/50 px-3 py-2">
-                <span className="block text-zinc-500">Tokens (In / Out)</span>
-                <span className="font-mono text-zinc-200">
-                  {result.telemetry.inputTokens} / {result.telemetry.outputTokens}
-                </span>
-              </div>
-              <div className="rounded-md border border-zinc-800/60 bg-zinc-950/50 px-3 py-2">
-                <span className="block text-zinc-500">Est. Cost / Run</span>
-                <span className="font-mono text-emerald-400">
-                  ${result.telemetry.estimatedCostUsd}
-                </span>
-              </div>
-              <div className="rounded-md border border-zinc-800/60 bg-zinc-950/50 px-3 py-2">
-                <span className="block text-zinc-500">Code Noise Cut</span>
-                <span className="font-mono text-zinc-200">{reductionPct}% HTML stripped</span>
-              </div>
-            </div>
+              <input
+                placeholder="Optional custom focus (e.g. Emphasize Python/Django or 2PM-10PM IST availability)"
+                value={customInstruction}
+                onChange={(e) => setCustomInstruction(e.target.value)}
+                className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+              />
 
-            <div>
+              {error && (
+                <p className="text-xs text-red-400 bg-red-950/40 border border-red-900 rounded-lg px-3 py-2">
+                  {error}
+                </p>
+              )}
+
               <button
-                type="button"
-                onClick={() => setShowContext(!showContext)}
-                className="text-xs text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 font-medium text-sm transition"
               >
-                {showContext
-                  ? '▾ Hide extracted site context (code output)'
-                  : '▸ Inspect extracted site context fed to model'}
+                {loading ? "Generating Tailored Outreach..." : "Generate Outreach"}
               </button>
+            </form>
 
-              {showContext && (
-                <div className="mt-2 rounded-lg border border-zinc-800/80 bg-zinc-950/80 p-3 text-xs text-zinc-400 space-y-1.5">
-                  {result.siteData.metaDescription && (
-                    <p>
-                      <span className="text-zinc-500">Meta:</span> {result.siteData.metaDescription}
-                    </p>
-                  )}
-                  {result.siteData.headings.length > 0 && (
-                    <p>
-                      <span className="text-zinc-500">Headings:</span>{' '}
-                      {result.siteData.headings.slice(0, 5).join(' · ')}
-                    </p>
-                  )}
-                  <p className="line-clamp-3">
-                    <span className="text-zinc-500">Clean body snippet:</span>{' '}
-                    {result.siteData.bodyText.slice(0, 320)}...
-                  </p>
+            {/* GENERATED RESULT CARD */}
+            {output && (
+              <div className="bg-zinc-900/70 border border-zinc-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <span className="text-xs text-emerald-400 font-medium block">
+                      Angle: {output.matchedAngle}
+                    </span>
+                    {fromCache && (
+                      <span className="text-[11px] text-zinc-400">
+                        Loaded instantly from client cache
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopy}
+                    className="text-xs px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 shrink-0 transition"
+                  >
+                    {copied ? "Copied!" : "Copy"}
+                  </button>
                 </div>
-              )}
-            </div>
-          </div>
-        )}
+
+                {output.subject && (
+                  <div className="text-xs bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2">
+                    <span className="text-zinc-400">Subject: </span>
+                    <span className="font-medium">{output.subject}</span>
+                  </div>
+                )}
+
+                <pre className="whitespace-pre-wrap font-sans text-sm bg-zinc-950 border border-zinc-800 rounded-lg p-3 leading-relaxed">
+                  {output.content}
+                </pre>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </main>
   );
-} 
+}
